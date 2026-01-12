@@ -1,0 +1,41 @@
+[package]
+name = "flash-arb-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "High-frequency market data gateway for Flash Arbitrage Bot"
+authors = ["Flash Arbitrage Team"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Redis
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+url = "2.5"
+chrono = "0.4"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Configuration
+config = "0.14"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[[bin]]
+name = "gateway"
+path = "src/main.rs"

@@ -1,0 +1,129 @@
+# Flash Arbitrage Bot Configuration
+
+# ==================== Base Configuration ====================
+base:
+  account_balance: 100.0
+  mode: "simulation"  # simulation / live
+  symbols:
+    - "BTCUSDT"
+    - "ETHUSDT"
+
+# ==================== Exchange Configuration ====================
+exchanges:
+  binance:
+    enabled: true
+    testnet: false
+    # Set via environment variable for security
+    # API keys loaded from FLASH_ARB_EXCHANGES_BINANCE_API_KEY
+    # api_key: "your_binance_api_key"
+    # api_secret: "your_binance_api_secret"
+
+  okx:
+    enabled: true
+    demo_trading: true
+    # API keys loaded from environment variables
+    # api_key: "your_okx_api_key"
+    # api_secret: "your_okx_api_secret"
+    # passphrase: "your_okx_passphrase"
+
+# ==================== Redis Configuration ====================
+redis:
+  url: "redis://localhost:6379"
+  channels:
+    tick: "flash_arb:tick"
+    kline: "flash_arb:kline"
+    depth: "flash_arb:depth"
+    ticker: "flash_arb:ticker"
+
+# ==================== Database Configuration ====================
+database:
+  url: "postgresql://flash_arb:flash_arb_password@localhost/flash_arb"
+  pool_size: 10
+
+# ==================== Trend Analysis Configuration ====================
+trend_analysis:
+  timeframes:
+    - "4h"
+    - "1h"
+    - "30m"
+    - "15m"
+    - "5m"
+    - "1m"
+  min_alignment_score: 60  # Minimum alignment percentage
+  min_trend_strength: 50   # Minimum trend strength (0-100)
+
+  # EMA settings
+  ema_fast_period: 9
+  ema_slow_period: 21
+
+  # MACD settings
+  macd_fast_period: 12
+  macd_slow_period: 26
+  macd_signal_period: 9
+
+# ==================== Pin Detection Configuration ====================
+pin_detection:
+  detection_window_ms: 500      # Detection window in milliseconds
+  velocity_threshold: 0.003     # 0.3% price change
+  volume_spike_factor: 3.0      # Volume must be 3x average
+  min_amplitude: 0.002          # Minimum 0.2% pin size
+  max_amplitude: 0.05           # Maximum 5% pin size
+  cooldown_ticks: 50            # Cooldown between detections
+
+# ==================== Entry Strategy Configuration ====================
+entry_strategy:
+  confirmation_retracement: 0.003   # 0.3% retracement confirms pin
+  confirmation_timeout_ms: 15000    # 15 second confirmation timeout
+  callback_depth_ratio: 0.5         # Expect 50% of pin amplitude as callback
+  callback_timeout_ms: 60000        # 60 second callback timeout
+  rebound_confirmation: 0.1          # 10% of callback as rebound confirmation
+  peak_tolerance: 0.005              # 0.5% tolerance around peak
+
+# ==================== Close Strategy Configuration ====================
+close_strategy:
+  first_leg_profit_threshold: 0.002   # 0.2% profit target for first leg
+  second_leg_profit_threshold: 0.002  # 0.2% profit target for second leg
+  stop_loss_threshold: 0.01           # 1% stop loss
+  max_hold_time_ms: 60000             # 60 second maximum hold time
+  urgent_close_time_ms: 45000         # Start urgent closing at 45 seconds
+
+# ==================== Position Management Configuration ====================
+position:
+  base_position_usdt: 15.0     # Base position size per leg
+  max_position_usdt: 30.0      # Maximum position size
+  min_position_usdt: 5.0       # Minimum position size
+  default_leverage: 20         # Default leverage multiplier
+  max_leverage: 50             # Maximum allowed leverage
+  risk_per_trade: 0.02         # 2% of account per trade
+
+# ==================== Risk Control Configuration ====================
+risk_control:
+  # Circuit breaker settings
+  consecutive_loss_limit: 5
+  daily_loss_percent_limit: 0.10   # 10% daily loss limit
+  hourly_loss_percent_limit: 0.05  # 5% hourly loss limit
+  api_error_limit: 5
+  network_timeout_limit: 3
+  short_breaker_duration: 300      # 5 minutes
+  medium_breaker_duration: 1800    # 30 minutes
+  long_breaker_duration: 3600      # 1 hour
+
+  # Daily limits
+  max_daily_trades: 50
+  max_consecutive_losses: 5
+  cooldown_after_loss_streak: 300  # 5 minute cooldown
+
+# ==================== Coin Screening Configuration ====================
+coin_screening:
+  min_24h_volume_usdt: 10000000    # Minimum $10M daily volume
+  max_spread_percent: 0.2          # Maximum 0.2% bid-ask spread
+  min_daily_volatility: 0.02       # Minimum 2% daily volatility
+  max_daily_volatility: 0.30       # Maximum 30% daily volatility
+  enable_auto_screening: true
+  screening_interval_minutes: 5     # Re-screen every 5 minutes
+
+# ==================== Logging Configuration ====================
+logging:
+  level: "INFO"              # TRACE, DEBUG, INFO, WARN, ERROR
+  log_dir: "logs"
+  format_json: false          # Set to true for JSON logs

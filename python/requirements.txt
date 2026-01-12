@@ -1,0 +1,45 @@
+# Flash Arbitrage Bot - Python Dependencies
+
+# ==================== Core Dependencies ====================
+redis[hiredis]>=5.0.0                # Redis client with C parser
+asyncio>=3.4.3                       # Async IO utilities
+
+# ==================== Data Processing ====================
+pandas>=2.1.0                        # Data analysis
+numpy>=1.24.0                        # Numerical computing
+numba>=0.58.0                        # JIT compilation for performance
+
+# ==================== Exchange APIs ====================
+python-binance>=1.0.17               # Binance official SDK
+ccxt>=4.1.0                          # Unified exchange API (OKX, etc.)
+
+# ==================== Database ====================
+sqlalchemy>=2.0.0                    # ORM
+alembic>=1.12.0                      # Database migrations
+psycopg2-binary>=2.9.0               # PostgreSQL driver
+asyncpg>=0.29.0                      # Async PostgreSQL driver
+
+# ==================== Configuration & Validation ====================
+pydantic>=2.4.0                      # Data validation
+pydantic-settings>=2.3.0             # Settings management
+pyyaml>=6.0.0                        # YAML config parsing
+python-dotenv>=1.0.0                 # Environment variables
+
+# ==================== Logging & Monitoring ====================
+structlog>=24.1.0                     # Structured logging
+colorama>=0.4.6                      # Colored terminal output
+prometheus-client>=0.19.0            # Prometheus metrics
+
+# ==================== Utilities ====================
+aiohttp>=3.9.0                       # Async HTTP client
+websockets>=12.0                     # WebSocket client
+uvloop>=0.19.0; sys_platform != 'win32'  # Fast event loop (Unix only)
+orjson>=3.9.0                        # Fast JSON parsing
+
+# ==================== Development Dependencies ====================
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# pytest-cov>=4.1.0
+# black>=23.9.0
+# ruff>=0.1.0
+# mypy>=1.6.0
