@@ -1,195 +1,277 @@
 # Flash Arbitrage Bot
 
-超高频"插针回调"对冲套利交易系统
+加密货币期货多时间框架插针套利交易系统
 
 ## 项目概述
 
-Flash Arbitrage Bot 是一个专为加密货币期货市场设计的高频套利交易系统。系统通过捕捉市场中的"插针"现象，利用两阶段入场策略（第一腿反向吃回调，第二腿顺向吃反弹）实现双向盈利。
+Flash Arbitrage Bot 是一个专为币安期货市场设计的高频套利交易系统。系统通过多时间框架分析检测"插针"现象，并采用两阶段入场策略实现双向盈利。
 
 ### 核心特性
 
-- **高性能数据网关**: Rust 实现的 WebSocket 行情网关，支持 Binance 和 OKX
-- **多时间框架分析**: 4H/1H/30m/15m/5m/1m 多时间框架趋势判断
-- **智能插针检测**: 基于速度、成交量、形态的综合插针识别算法
-- **两阶段入场策略**: 第一腿回调交易 + 第二腿反弹交易
-- **完整风险控制**: 熔断器、止损、日度限额、黑名单机制
-- **模拟交易模式**: 支持模拟交易验证策略有效性
-- **数据持久化**: 完整的交易历史和数据分析
+- **多时间框架分析**: 30s/1m/5m/15m 多时间框架趋势判断
+- **智能插针检测**: 基于连续K线、颜色反转、位置确认的综合检测算法
+- **两阶段入场策略**: 第一腿顺势入场 + 第二腿回调锁利
+- **实时K线追踪**: WebSocket实时价格更新，自动生成和更新K线数据
+- **测试网交易**: 支持币安期货测试网完整交易功能
+- **数据持久化**: 完整的交易历史记录，支持JSON/CSV导出
 
-## 系统架构
-
-```
-┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
-│  Rust 行情网关  │ ───▶ │  Redis 消息队列  │ ───▶ │  Python 策略引擎  │
-│  - WebSocket    │      │  - Tick Stream  │      │  - 趋势分析      │
-│  - Binance/OKX  │      │  - Kline Stream │      │  - 插针检测      │
-│  - 高性能解析   │      │  - Depth Stream │      │  - 交易执行      │
-└─────────────────┘      └─────────────────┘      │  - 风险控制      │
-                                                  └─────────────────┘
-```
+---
 
 ## 快速开始
 
 ### 环境要求
 
-- Rust 1.75+
 - Python 3.11+
-- Docker Desktop (用于 Redis 和 PostgreSQL)
-- Windows/Linux/macOS
+- 币安期货测试网账户
 
 ### 安装步骤
 
-1. **克隆项目**
 ```bash
+# 克隆项目
 git clone <repository-url>
-cd Flash_Arbitrage_bot
-```
+cd Flash_Arbitrage_bot/python
 
-2. **启动依赖服务**
-```bash
-docker-compose up -d redis postgres
-```
-
-3. **安装 Rust 依赖**
-```bash
-cd rust/gateway
-cargo build
-```
-
-4. **安装 Python 依赖**
-```bash
-cd ../python
-python -m venv venv
-
-# Windows
-.\venv\Scripts\activate
-
-# Linux/macOS
-source venv/bin/activate
-
+# 安装依赖
 pip install -r requirements.txt
 ```
 
-5. **配置环境变量**
-```bash
-cp .env.example .env
-# 编辑 .env 文件，填入你的 API 密钥
-```
+### 配置
+
+1. **获取测试网 API 密钥**
+   - 访问 https://testnet.binancefuture.com/
+   - 注册并获取 API Key 和 Secret
+
+2. **设置环境变量**
+   ```bash
+   # Windows PowerShell
+   $env:BINANCE_TESTNET_API_KEY="your_api_key"
+   $env:BINANCE_TESTNET_API_SECRET="your_api_secret"
+   ```
+
+3. **手动开启双向持仓模式**
+   - 登录测试网页端
+   - 在持仓模式中开启"双向持仓"
 
 ### 运行
 
-**启动 Rust 行情网关**
-```bash
-cd rust/gateway
-cargo run -- --symbols BTCUSDT,ETHUSDT --exchanges binance
-```
-
-**启动 Python 策略引擎 (模拟模式)**
 ```bash
 cd python
-python src/main.py --mode simulation
+python testnet_mtf_trading.py
 ```
 
-## 配置说明
+---
 
-主配置文件位于 `config/config.yaml`，支持以下主要配置项：
+## 策略说明
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `base.mode` | 运行模式 (simulation/live) | simulation |
-| `base.account_balance` | 账户余额 (USDT) | 100 |
-| `position.base_position_usdt` | 单腿仓位大小 | 15 |
-| `position.default_leverage` | 默认杠杆倍数 | 20 |
-| `trend_analysis.min_alignment_score` | 最小趋势对齐分数 | 60 |
-| `pin_detection.velocity_threshold` | 插针速度阈值 | 0.003 (0.3%) |
-| `risk_control.daily_loss_percent_limit` | 日亏损限额 | 0.10 (10%) |
+### 多时间框架插针检测逻辑
+
+系统使用4个时间框架进行复合验证：
+
+| 时间框架 | 用途 | 检测条件 |
+|----------|------|----------|
+| 30秒 | 趋势确认 | 连续5根阳线/阴线 |
+| 1分钟 | 回调确认 | 当前价格不再延续趋势 |
+| 5分钟 | 回调确认 | 当前价格不再延续趋势 |
+| 15分钟 | 位置确认 | 在近16根高点/低点附近 + 回落0.15% |
+
+### 信号类型
+
+**上涨插针 (UP_PIN)** - 做空机会
+- 检测: 30秒K线连续5根阳线 → 1m/5m/15m颜色反转 → 处于15分钟高点
+- 策略: 高位做空 → 回调做多锁利 → 先平空 → 后平多
+
+**下跌插针 (DOWN_PIN)** - 做多机会
+- 检测: 30秒K线连续5根阴线 → 1m/5m/15m颜色反转 → 处于15分钟低点
+- 策略: 低位做多 → 反弹做空锁利 → 先平多 → 后平空
+
+### 两阶段入场策略
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    上涨插针示例                         │
+├─────────────────────────────────────────────────────────┤
+│  价格                                              │
+│    ↑ 3.68  ┌─────────────────┐                       │
+│    │       │  第一腿: 做空    │                       │
+│    │       └─────────────────┘                       │
+│    │                                                  │
+│    ├ 3.66  ┌─────────────────┐                       │
+│    │       │  第二腿: 做多    │ ← 锁定空单利润         │
+│    │       │  (回调时触发)    │                       │
+│    │       └─────────────────┘                       │
+│    │                                                  │
+│    ↓ 3.64  ┌─────────────────┐                       │
+│           │  先平空 (盈利)    │                       │
+│           └─────────────────┘                       │
+│    │                                                  │
+│    └──────  ┌─────────────────┐                       │
+│             │  后平多 (低买高卖) │                       │
+│             └─────────────────┘                       │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 配置参数
+
+### 交易参数 (`config/testnet_config.py`)
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `POSITION_USDT` | 15.0 | 单笔仓位大小(USDT) |
+| `LEVERAGE` | 20 | 杠杆倍数 |
+| `FEE_RATE` | 0.0004 | 手续费率(0.04%) |
+
+### 对冲策略参数 (`SimpleHedgeConfig`)
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `HEDGE_ENTRY_PERCENT` | 0.006 | 对冲入场阈值(0.6%) |
+| `FIRST_LEG_TARGET_PERCENT` | 0.008 | 第一腿目标盈利(0.8%) |
+| `SECOND_LEG_WAIT_SECONDS` | 300 | 第二腿等待时间(300秒) |
+
+### 信号检测参数 (`MTFPinDetectorConfig`)
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `TREND_CONSECUTIVE_BARS` | 5 | 趋势确认所需连续K线数 |
+| `POSITION_BARS_COUNT` | 16 | 位置判断的K线数量 |
+| `POSITION_THRESHOLD` | 0.0015 | 位置判断阈值(0.15%) |
+| `MIN_PULLBACK` | 0.0015 | 最小回撤幅度(0.15%) |
+
+### 风控参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `MAX_DAILY_TRADES` | 100 | 每日最大交易次数 |
+| `MAX_DAILY_LOSS_USDT` | 100.0 | 每日最大亏损(USDT) |
+| `MAX_CONSECUTIVE_LOSSES` | 100 | 最大连续亏损次数 |
+
+---
 
 ## 项目结构
 
 ```
 Flash_Arbitrage_bot/
-├── rust/
-│   └── gateway/           # Rust 行情网关
-│       ├── src/
-│       │   ├── main.rs
-│       │   ├── exchange.rs       # 交易所抽象接口
-│       │   ├── binance.rs        # Binance WebSocket 实现
-│       │   ├── okx.rs            # OKX WebSocket 实现
-│       │   └── redis_publisher.rs
-│       └── Cargo.toml
 ├── python/
+│   ├── testnet_mtf_trading.py      # 主运行器 (多时间框架策略)
+│   ├── config/
+│   │   └── testnet_config.py        # 测试网配置
 │   ├── src/
-│   │   ├── main.py
-│   │   ├── gateway/              # 数据网关 (Redis 消费)
-│   │   ├── analysis/             # 分析引擎
-│   │   ├── strategy/             # 交易策略
-│   │   ├── execution/            # 订单执行
-│   │   └── risk/                 # 风险控制
-│   ├── requirements.txt
-│   └── pyproject.toml
-├── config/
-│   └── config.yaml        # 主配置文件
-├── docker-compose.yml
+│   │   ├── exchange/
+│   │   │   └── binance_futures.py   # 币安期货API客户端
+│   │   ├── trading/
+│   │   │   ├── simple_hedge.py      # 对冲执行器
+│   │   │   ├── trade_logger.py      # 交易日志记录器
+│   │   │   └── ...
+│   │   └── analysis/
+│   │       ├── kline_tracker.py     # K线追踪器
+│   │       ├── mtf_detector.py      # 多时间框架插针检测器
+│   │       └── ...
+│   ├── logs/                         # 运行日志
+│   └── testnet_trades/               # 交易记录
 └── README.md
 ```
 
-## 策略说明
+---
 
-### 插针检测原理
+## 核心模块说明
 
-系统通过以下条件综合判断插针：
-1. **速度特征**: 短时间内价格变化率超过阈值
-2. **成交量特征**: 伴随异常放大的成交量
-3. **形态特征**: 快速冲击后快速回撤
-4. **趋势对齐**: 插针方向必须与大趋势一致
+### 1. KlineTracker (`src/analysis/kline_tracker.py`)
 
-### 两阶段入场策略
+多时间框架K线数据追踪器，支持：
+- 实时价格更新自动生成K线
+- 历史K线数据加载
+- 连续K线统计
+- 价格位置判断
 
-**向上插针示例 (大趋势为上涨)**:
-1. 检测向上插针到达顶点
-2. 等待回调确认 (0.3% 回撤)
-3. 第一腿: 开空单，吃回调利润
-4. 回调到位后，第二腿: 开多单，吃反弹利润
-5. 分别在最优位置平仓
+### 2. MTFPinDetector (`src/analysis/mtf_detector.py`)
 
-### 风险控制
+多时间框架插针检测器：
+- 趋势确认 (30秒连续K线)
+- 回调确认 (1m/5m颜色反转)
+- 位置确认 (15m高低点)
+- 信号置信度计算
 
-| 机制 | 触发条件 | 动作 |
-|------|----------|------|
-| 止损 | 亏损达 1% | 立即平仓 |
-| 超时强平 | 持仓超 60 秒 | 强制平仓 |
-| 熔断器 | 连续亏损 5 次 | 暂停交易 5 分钟 |
-| 日度限额 | 日亏损达 10% | 停止当日交易 |
+### 3. SimpleHedgeExecutor (`src/trading/simple_hedge.py`)
 
-## 开发指南
+对冲交易执行器：
+- 两阶段入场执行
+- 自动平仓逻辑
+- 持仓状态管理
+- 盈亏统计
 
-### 运行测试
+### 4. BinanceFuturesClient (`src/exchange/binance_futures.py`)
 
-**Rust 测试**
-```bash
-cd rust/gateway
-cargo test
+币安期货API客户端：
+- 账户信息查询
+- 订单下单/撤单
+- 杠杆调整
+- K线数据获取
+- 完整的错误处理
+
+---
+
+## 数据记录
+
+交易记录保存在 `testnet_trades/` 目录：
+- `hedge_trades_YYYYMMDD_HHMMSS.json` - JSON格式
+- `hedge_trades_YYYYMMDD_HHMMSS.csv` - CSV格式
+
+### 记录内容
+
+```json
+{
+  "export_time": "2026-01-14T18:00:00",
+  "total_trades": 10,
+  "trades": [
+    {
+      "symbol": "BTCUSDT",
+      "direction": "UP",
+      "entry_price": 95000.0,
+      "first_side": "SHORT",
+      "first_pnl": 0.5000,
+      "second_pnl": 0.2000,
+      "total_pnl": 0.7000,
+      ...
+    }
+  ]
+}
 ```
 
-**Python 测试**
-```bash
-cd python
-pytest tests/
+---
+
+## 运行日志示例
+
+```
+[18:00:00] ============================================================
+[18:00:00] Flash Arbitrage Bot - 多时间框架策略（测试网）
+[18:00:00] ============================================================
+[18:00:00] 测试交易所连接...
+[18:00:00] 连接成功 | 可用余额: 10585.38 USDT
+[18:00:00] ============================================================
+[18:00:00] 多时间框架策略已启动
+[18:00:00] 监控: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, TRUMPUSDT...
+[18:00:00] 配置: 15.0 USDT × 20x
+[18:00:00] 参数: 对冲0.6% | 目标0.8% | 等待300s
+[18:00:00] ============================================================
+[18:00:00] 等待信号...
+[18:00:05] 加载历史K线数据...
+[18:00:05] 历史数据加载完成 (成功: 111, 跳过30s: 0)
+[18:00:05] WebSocket已连接
 ```
 
-### 代码规范
+---
 
-- Rust: 使用 `cargo fmt` 格式化，`cargo clippy` 检查
-- Python: 使用 `black` 格式化，`ruff` 检查
+## 风险提示
 
-## 免责声明
+- 本项目仅供学习和研究使用
+- 加密货币交易具有高风险
+- 测试网环境与主网可能存在差异
+- 请在充分测试后再考虑实盘
 
-本项目仅供学习和研究使用。加密货币交易具有高风险，可能导致全部资金损失。使用本系统进行实盘交易的风险由使用者自行承担。
+---
 
 ## 许可证
 
 MIT License
-
-## 联系方式
-
-- Issues: 在 GitHub 上提交 Issue

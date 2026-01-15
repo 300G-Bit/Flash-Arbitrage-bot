@@ -2,7 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(mkdir:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "mcp__web-search-prime__webSearchPrime",
+      "mcp__web-reader__webReader",
+      "mcp__zai-mcp-server__extract_text_from_screenshot",
+      "Skill(code-review:code-review)",
+      "Bash(wc:*)",
+      "Bash(git rm:*)",
+      "Skill(superpowers:brainstorming)",
+      "Skill(superpowers:brainstorming:*)"
     ]
   }
 }

@@ -59,12 +59,12 @@ TRADING_CONFIG = {
     "slippage": 0.0001,           # 滑点估算 0.01%
     
     # 止盈止损参数 (测试不同档位)
-    "take_profit_levels": [0.3, 0.5, 0.8, 1.0, 1.5, 2.0],  # 止盈百分比
-    "stop_loss_levels": [0.2, 0.3, 0.5, 0.8, 1.0],         # 止损百分比
+    "take_profit_levels": [2.0, 3.0, 4.0, 5.0, 6.0, 8.0],  # 止盈百分比
+    "stop_loss_levels": [1.0, 1.5, 2.0, 2.5, 3.0],        # 止损百分比
     
     # 默认止盈止损
-    "default_tp": 3,            # 默认止盈 0.5%
-    "default_sl": 0.3,            # 默认止损 0.3%
+    "default_tp": 3.0,            # 默认止盈 3.0%
+    "default_sl": 1.5,            # 默认止损 1.5%
 }
 
 # ============== API配置 ==============
@@ -89,8 +89,8 @@ MONITOR_DURATION = 3600  # 1小时
 
 # 数据记录配置
 DATA_CONFIG = {
-    "price_history_seconds": 60,   # 记录信号前10秒的价格
-    "tracking_seconds": 90,        # 信号后跟踪60秒
+    "price_history_seconds": 60,   # 记录信号前60秒的价格
+    "tracking_seconds": 90,        # 信号后跟踪90秒
     "tracking_interval_ms": 100,   # 跟踪间隔100ms
 }
 
@@ -369,11 +369,69 @@ def analyze_spike(spike: PriceSpike):
 
 # ============== 数据保存 ==============
 
+def get_session_config():
+    """获取当前会话的配置参数"""
+    return {
+        "trading": TRADING_CONFIG.copy(),
+        "data": DATA_CONFIG.copy(),
+        "detection": REALTIME_CONFIG.copy(),
+        "symbols": DEFAULT_SYMBOLS.copy(),
+        "session_start": format_datetime(get_beijing_time())
+    }
+
+
+def save_session_config():
+    """保存会话配置到文件"""
+    config = get_session_config()
+    filename = DATA_DIR / "session_config.json"
+
+    # 如果已有配置文件，先读取历史记录
+    history = []
+    if filename.exists():
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                history = data.get('history', [])
+        except:
+            pass
+
+    # 添加当前配置到历史
+    history.append(config)
+
+    # 保存
+    save_data = {
+        'current': config,
+        'history': history[-10:],  # 只保留最近10次
+        'history_count': len(history)
+    }
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(save_data, f, indent=2, ensure_ascii=False)
+
+    return filename
+
+
 def save_spike_data(spike: PriceSpike):
     """保存单个信号的详细数据"""
     filename = DATA_DIR / f"spike_{spike.id}.json"
-    
+
     data = {
+        # 会话配置参数
+        "_config": {
+            "capital": TRADING_CONFIG["capital"],
+            "leverage": TRADING_CONFIG["leverage"],
+            "fee_rate": TRADING_CONFIG["fee_rate"],
+            "take_profit_levels": TRADING_CONFIG["take_profit_levels"],
+            "stop_loss_levels": TRADING_CONFIG["stop_loss_levels"],
+            "default_tp": TRADING_CONFIG["default_tp"],
+            "default_sl": TRADING_CONFIG["default_sl"],
+            "tracking_seconds": DATA_CONFIG["tracking_seconds"],
+            "tracking_interval_ms": DATA_CONFIG["tracking_interval_ms"],
+            "min_spike_percent": REALTIME_CONFIG["min_spike_percent"],
+            "retracement_percent": REALTIME_CONFIG["retracement_percent"],
+        },
+
+        # 信号数据
         "id": spike.id,
         "detected_at": format_datetime(spike.detected_at),
         "symbol": spike.symbol,
@@ -384,7 +442,14 @@ def save_spike_data(spike: PriceSpike):
         "amplitude_percent": spike.amplitude_percent,
         "retracement_percent": spike.retracement_percent,
         "confirmed": spike.confirmed,
-        
+
+        # 持续时间信息
+        "duration_info": {
+            "spike_duration_ms": spike.duration_ms,  # 插针形成时间
+            "tracking_duration_seconds": DATA_CONFIG["tracking_seconds"],  # 跟踪时长
+            "actual_tracking_seconds": len(spike.prices_after) * DATA_CONFIG["tracking_interval_ms"] / 1000,  # 实际跟踪秒数
+        },
+
         "analysis": {
             "max_profit_percent": spike.max_profit_percent,
             "max_loss_percent": spike.max_loss_percent,
@@ -393,16 +458,16 @@ def save_spike_data(spike: PriceSpike):
             "final_price": spike.final_price,
             "final_pnl_percent": spike.final_pnl_percent,
         },
-        
+
         "tp_sl_results": spike.tp_sl_results,
-        
+
         "prices_before": [t.to_dict() for t in spike.prices_before[-100:]],
         "prices_after": [t.to_dict() for t in spike.prices_after[-600:]],
     }
-    
+
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    
+
     return filename
 
 
@@ -1095,7 +1160,14 @@ def main():
     
     # 创建数据目录
     print(f"\n📁 数据保存目录: {DATA_DIR.absolute()}")
-    
+
+    # 保存会话配置
+    config_file = save_session_config()
+    print(f"📋 配置文件: {config_file.name}")
+    print(f"   本金: {TRADING_CONFIG['capital']} U, 杠杆: {TRADING_CONFIG['leverage']}x")
+    print(f"   止盈: {TRADING_CONFIG['take_profit_levels']}%, 止损: {TRADING_CONFIG['stop_loss_levels']}%")
+    print(f"   跟踪: {DATA_CONFIG['tracking_seconds']}秒, 间隔: {DATA_CONFIG['tracking_interval_ms']}ms")
+
     # 启动检测器
     print(f"\n🚀 启动数据记录 ({len(DEFAULT_SYMBOLS)}个交易对, {monitor_duration//60}分钟)...")
     
