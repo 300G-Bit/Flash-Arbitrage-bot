@@ -12,20 +12,11 @@ from typing import Dict, List, Optional
 
 import requests
 
+from ..utils.logging_config import get_logger, EventLogger
 
-_logger = None
-
-
-def _get_logger():
-    """获取日志器实例"""
-    global _logger
-    if _logger is None:
-        try:
-            from ..utils.logger import get_logger
-            _logger = get_logger()
-        except ImportError:
-            _logger = None
-    return _logger
+# 使用统一日志系统
+logger = get_logger(__name__)
+events = EventLogger(logger)
 
 
 class SideType(Enum):
@@ -279,10 +270,10 @@ class BinanceFuturesClient:
         **kwargs
     ) -> Dict:
         """发送HTTP请求"""
-        logger = _get_logger()
+        start_time = time.time()
 
-        if logger and signed:
-            logger.api_request(method, endpoint, kwargs.get("params"))
+        if signed:
+            events.log_api_request(method, endpoint, **kwargs.get("params", {}))
 
         url = f"{self.base_url}{endpoint}"
 
@@ -305,21 +296,23 @@ class BinanceFuturesClient:
             response.raise_for_status()
             response_data = response.json()
 
-            if logger and signed:
-                logger.api_response(method, endpoint, response_data)
+            duration_ms = (time.time() - start_time) * 1000
+            if signed:
+                events.log_api_response(method, endpoint, duration_ms, 200)
 
             return response_data
 
         except requests.exceptions.HTTPError as e:
+            duration_ms = (time.time() - start_time) * 1000
             error_data = self._build_error_data(e)
-            if logger:
-                logger.api_response(method, endpoint, error=error_data)
+            status_code = e.response.status_code if hasattr(e, "response") and e.response else None
+            events.log_api_error(method, endpoint, f"HTTP {status_code}: {error_data.get('message', str(e))}")
             return error_data
 
         except requests.exceptions.RequestException as e:
+            duration_ms = (time.time() - start_time) * 1000
             error_data = {"error": True, "message": str(e), "response": {}}
-            if logger:
-                logger.api_response(method, endpoint, error=error_data)
+            events.log_api_error(method, endpoint, f"RequestException: {str(e)}")
             return error_data
 
     def _build_error_data(self, error: requests.exceptions.HTTPError) -> Dict:

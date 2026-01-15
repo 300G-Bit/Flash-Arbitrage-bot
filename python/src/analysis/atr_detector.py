@@ -13,12 +13,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
 
-import structlog
-
 from .atr_types import ATRMetrics, SpikeDirection, SpikeSignal, SpikeType
 from .kline_tracker import Kline, KlineTracker, Timeframe
 
-logger = structlog.get_logger(__name__)
+# 使用统一日志系统
+from ..utils.logging_config import get_logger, EventLogger, generate_correlation_id
+
+logger = get_logger(__name__)
+events = EventLogger(logger)
 
 
 class ATRCalculator:
@@ -130,7 +132,7 @@ class SpikeDetector:
         # 价格历史（用于速度计算）
         self.price_history: Dict[int, float] = {}
 
-        self.logger = logger.bind(symbol=symbol)
+        self.logger = logger.with_data(symbol=symbol)
 
     def on_price(self, price: float, timestamp: int) -> None:
         """处理价格更新
@@ -367,14 +369,28 @@ class SpikeDetector:
             detected_at=datetime.now(timezone.utc)
         )
 
-        self.logger.info(
-            "Up pin detected",
+        # 记录信号检测事件
+        events.log_signal_detected(
             symbol=self.symbol,
-            entry_price=current_price,
+            direction="DOWN",  # 做空
+            price=current_price,
+            atr=atr,
+            velocity=velocity,
+            confidence=confidence,
             high_price=high_price,
-            velocity=f"{velocity:.2%}",
-            atr=f"{atr:.6f}",
-            confirmation=f"shadow={has_long_shadow}, reversal={has_color_reversal}, false_breakout={has_false_breakout}"
+            low_price=low_price,
+            start_price=start_price,
+            spike_threshold=spike_threshold,
+            retrace_threshold=retrace_threshold,
+            has_long_shadow=has_long_shadow,
+            has_color_reversal=has_color_reversal,
+            has_false_breakout=has_false_breakout,
+            shadow_ratio=current_kline.upper_wick / max(current_kline.body, 0.0001)
+        )
+
+        self.logger.info(
+            f"Up pin detected: {self.symbol} entry={current_price:.6f} high={high_price:.6f} "
+            f"velocity={velocity:.2%} atr={atr:.6f} conf={confidence}"
         )
 
         return signal
@@ -444,14 +460,28 @@ class SpikeDetector:
             detected_at=datetime.now(timezone.utc)
         )
 
-        self.logger.info(
-            "Down pin detected",
+        # 记录信号检测事件
+        events.log_signal_detected(
             symbol=self.symbol,
-            entry_price=current_price,
+            direction="UP",  # 做多
+            price=current_price,
+            atr=atr,
+            velocity=velocity,
+            confidence=confidence,
+            high_price=high_price,
             low_price=low_price,
-            velocity=f"{velocity:.2%}",
-            atr=f"{atr:.6f}",
-            confirmation=f"shadow={has_long_shadow}, reversal={has_color_reversal}, false_breakout={has_false_breakout}"
+            start_price=start_price,
+            spike_threshold=spike_threshold,
+            retrace_threshold=retrace_threshold,
+            has_long_shadow=has_long_shadow,
+            has_color_reversal=has_color_reversal,
+            has_false_breakout=has_false_breakout,
+            shadow_ratio=current_kline.lower_wick / max(current_kline.body, 0.0001)
+        )
+
+        self.logger.info(
+            f"Down pin detected: {self.symbol} entry={current_price:.6f} low={low_price:.6f} "
+            f"velocity={velocity:.2%} atr={atr:.6f} conf={confidence}"
         )
 
         return signal
@@ -502,7 +532,7 @@ class SpikeDetectorManager:
         """
         self.config = config or SpikeDetectorConfig()
         self.detectors: Dict[str, SpikeDetector] = {}
-        self.logger = logger.bind(component="SpikeDetectorManager")
+        self.logger = logger.with_data(component="SpikeDetectorManager")
 
     def get_detector(self, symbol: str) -> SpikeDetector:
         """获取或创建交易对的检测器"""

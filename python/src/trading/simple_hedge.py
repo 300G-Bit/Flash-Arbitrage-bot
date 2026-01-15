@@ -8,15 +8,13 @@
 支持基于ATR的动态阈值
 """
 
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Callable, Union
-
-import structlog
+from typing import Dict, Optional, Callable, Union, Any
 
 from ..exchange.binance_futures import BinanceFuturesClient
+from ..utils.logging_config import get_logger, EventLogger, generate_correlation_id
 
 # 兼容旧版和新版信号类型
 try:
@@ -38,13 +36,9 @@ except ImportError:
             UP = "UP"
             DOWN = "DOWN"
 
-logger = structlog.get_logger(__name__)
-
-
-def _flush_log(msg: str) -> None:
-    """强制刷新日志到控制台"""
-    print(msg, flush=True)
-    logger.info(msg)
+# 使用统一日志系统
+logger = get_logger(__name__)
+events = EventLogger(logger)
 
 
 class SimpleHedgeConfig:
@@ -64,10 +58,11 @@ class SimpleHedgePosition:
     direction: SpikeDirection
     entry_price: float
     signal_time: datetime
+    correlation_id: str = ""  # 关联ID，用于追踪完整交易流程
 
-    first_side: str
-    first_entry: float
-    first_quantity: float
+    first_side: str = ""
+    first_entry: float = 0.0
+    first_quantity: float = 0.0
     first_order_id: str = ""
     first_filled: bool = False
 
@@ -123,9 +118,19 @@ class SimpleHedgeExecutor:
         config: SimpleHedgeConfig | None = None,
         position_usdt: float = 15.0,
         leverage: int = 20,
-        fee_rate: float = 0.0004
+        fee_rate: float = 0.0004,
+        external_logger: Any = None
     ):
-        """初始化执行器"""
+        """初始化执行器
+
+        Args:
+            client: Binance期货客户端
+            config: 对冲配置
+            position_usdt: 仓位大小(USDT)
+            leverage: 杠杆倍数
+            fee_rate: 手续费率
+            external_logger: 外部传入的logger(用于集成主程序日志系统)
+        """
         self.client = client
         self.config = config or SimpleHedgeConfig()
         self.position_usdt = position_usdt
@@ -139,7 +144,8 @@ class SimpleHedgeExecutor:
         self._on_hedge_opened: Optional[Callable] = None
         self._on_hedge_closed: Optional[Callable] = None
 
-        self.logger = logger
+        # 使用外部logger或默认logger
+        self.logger = external_logger if external_logger is not None else logger
 
     def set_signal_callback(self, callback: Callable) -> None:
         self._on_signal = callback
@@ -157,39 +163,43 @@ class SimpleHedgeExecutor:
         """
         symbol = signal.symbol
 
+        # 生成关联ID，用于追踪完整交易流程
+        correlation_id = generate_correlation_id()
+
         # 诊断日志：确认信号到达
-        _flush_log(
+        self.logger.with_correlation_id(correlation_id).debug(
             f"[信号] {symbol} direction={signal.direction.value} entry={signal.entry_price:.6f} "
             f"client_ready={self.client is not None}"
         )
-        sys.stdout.flush()
 
         if symbol in self.positions:
             pos = self.positions[symbol]
             if not pos.is_closed:
                 self.logger.debug(f"[跳过] {symbol} 已有持仓")
+                events.log_signal_filtered(symbol, "已有活跃持仓")
                 return False
 
         # 确定方向：UP做多，DOWN做空（第一腿顺势）
         first_side = "LONG" if signal.direction == SpikeDirection.UP else "SHORT"
         second_side = "SHORT" if signal.direction == SpikeDirection.UP else "LONG"
 
-        _flush_log(f"[DEBUG-1] {symbol} 创建持仓对象, first_side={first_side}, second_side={second_side}")
-        sys.stdout.flush()
+        self.logger.with_correlation_id(correlation_id).debug(
+            f"[DEBUG-1] {symbol} 创建持仓对象, first_side={first_side}, second_side={second_side}"
+        )
 
         position = SimpleHedgePosition(
             symbol=symbol,
             direction=signal.direction,
             entry_price=signal.entry_price,
             signal_time=signal.detected_at,
+            correlation_id=correlation_id,
             first_side=first_side,
             first_entry=signal.entry_price,
         )
         position.second_side = second_side
 
         # 计算仓位数量
-        _flush_log(f"[DEBUG-2] {symbol} 开始计算数量, position_usdt={self.position_usdt}, leverage={self.leverage}")
-        sys.stdout.flush()
+        self.logger.debug(f"[DEBUG-2] {symbol} 开始计算数量, position_usdt={self.position_usdt}, leverage={self.leverage}")
 
         if self.client:
             try:
@@ -198,22 +208,18 @@ class SimpleHedgeExecutor:
                 )
                 position.first_quantity = quantity
                 position.second_quantity = quantity
-                _flush_log(f"[DEBUG-3] {symbol} 计算数量结果: quantity={quantity:.6f}")
-                sys.stdout.flush()
+                self.logger.debug(f"[DEBUG-3] {symbol} 计算数量结果: quantity={quantity:.6f}")
 
                 if quantity <= 0:
-                    _flush_log(f"[ERROR] {symbol} 计算数量为0或负数! quantity={quantity}")
-                    sys.stdout.flush()
+                    self.logger.error(f"[ERROR] {symbol} 计算数量为0或负数! quantity={quantity}")
                     return False
             except Exception as e:
-                _flush_log(f"[ERROR] {symbol} 计算数量异常: {e}")
-                sys.stdout.flush()
+                self.logger.error(f"[ERROR] {symbol} 计算数量异常: {e}")
                 return False
         else:
             position.first_quantity = 0.0
             position.second_quantity = 0.0
-            _flush_log(f"[ERROR] {symbol} 客户端未初始化，无法计算数量")
-            sys.stdout.flush()
+            self.logger.error(f"[ERROR] {symbol} 客户端未初始化，无法计算数量")
             return False
 
         # 对冲目标价格计算：
@@ -248,22 +254,31 @@ class SimpleHedgeExecutor:
         else:
             position.first_tp_price = signal.entry_price * (1 - retrace_percent * 1.5)
 
-        _flush_log(f"[DEBUG-4] {symbol} 准备开第一腿, quantity={position.first_quantity:.6f}")
-        sys.stdout.flush()
+        self.logger.debug(f"[DEBUG-4] {symbol} 准备开第一腿, quantity={position.first_quantity:.6f}")
 
         try:
             success = self._open_first_leg(position)
-            _flush_log(f"[DEBUG-5] {symbol} 第一腿开仓结果: success={success}")
-            sys.stdout.flush()
+            self.logger.debug(f"[DEBUG-5] {symbol} 第一腿开仓结果: success={success}")
         except Exception as e:
-            _flush_log(f"[ERROR] {symbol} 第一腿开仓异常: {e}")
-            sys.stdout.flush()
+            self.logger.error(f"[ERROR] {symbol} 第一腿开仓异常: {e}")
             import traceback
             traceback.print_exc()
             return False
 
         if success:
             self.positions[symbol] = position
+
+            # 记录订单成交事件
+            events.log_order_filled(
+                symbol=symbol,
+                order_id=position.first_order_id,
+                avg_price=position.first_entry,
+                filled_qty=position.first_quantity,
+                correlation_id=correlation_id,
+                side=first_side,
+                leg="first"
+            )
+
             self.logger.info(
                 f"✓ 第一腿已开: {symbol} {first_side} @ {position.first_entry:.6f} x {position.first_quantity:.6f}\n"
                 f"   对冲目标: {position.hedge_target:.6f} | 止盈: {position.first_tp_price:.6f}"
@@ -272,6 +287,15 @@ class SimpleHedgeExecutor:
             if self._on_signal:
                 self._on_signal(signal)
         else:
+            # 记录订单失败事件
+            events.log_order_failed(
+                symbol=symbol,
+                reason="第一腿开仓失败",
+                correlation_id=correlation_id,
+                side=first_side,
+                quantity=position.first_quantity
+            )
+
             self.logger.error(
                 f"✗ 第一腿开仓失败: {symbol} {first_side} @ {signal.entry_price:.6f}\n"
                 f"   数量: {position.first_quantity} | 客户端已初始化: {self.client is not None}"
@@ -289,6 +313,12 @@ class SimpleHedgeExecutor:
         if pos.is_closed:
             del self.positions[symbol]
             return
+
+        # 使用关联ID记录价格更新日志
+        if pos.correlation_id:
+            log = self.logger.with_correlation_id(pos.correlation_id)
+        else:
+            log = self.logger
 
         if pos.is_first_open and not pos.is_second_open:
             self._check_hedge_entry(pos, price)
@@ -315,72 +345,59 @@ class SimpleHedgeExecutor:
         """
         if not order_id:
             self.logger.warning(f"{symbol} {leg}腿无订单ID，使用当前价格: {current_price:.6f}")
-            _flush_log(f"[WARN] {symbol} {leg}腿无订单ID")
-            sys.stdout.flush()
+            self.logger.warning(f"[WARN] {symbol} {leg}腿无订单ID")
             return current_price
 
         # 等待订单处理
-        _flush_log(f"[_wait-1] {symbol} {leg}腿 等待订单处理, order_id={order_id}")
-        sys.stdout.flush()
+        self.logger.debug(f"[_wait-1] {symbol} {leg}腿 等待订单处理, order_id={order_id}")
         time.sleep(0.15)
 
         # 轮询确认订单已FILLED
         for attempt in range(5):
             try:
-                _flush_log(f"[_wait-2] {symbol} {leg}腿 查询订单状态 (尝试 {attempt+1}/5)")
-                sys.stdout.flush()
+                self.logger.debug(f"[_wait-2] {symbol} {leg}腿 查询订单状态 (尝试 {attempt+1}/5)")
 
                 updated = self.client.get_order(symbol, order_id=order_id)
 
-                _flush_log(f"[_wait-3] {symbol} {leg}腿 订单查询结果: updated={updated}, status={getattr(updated, 'status', 'N/A') if updated else 'None'}")
-                sys.stdout.flush()
+                self.logger.debug(f"[_wait-3] {symbol} {leg}腿 订单查询结果: updated={updated}, status={getattr(updated, 'status', 'N/A') if updated else 'None'}")
 
                 if updated and updated.status == "FILLED":
-                    _flush_log(f"[SUCCESS] {symbol} {leg}腿 订单已成交, avg_price={updated.avg_price}")
-                    sys.stdout.flush()
+                    self.logger.info(f"[SUCCESS] {symbol} {leg}腿 订单已成交, avg_price={updated.avg_price}")
                     return updated.avg_price or current_price
                 if updated and updated.status in ["EXPIRED", "CANCELED", "REJECTED"]:
                     self.logger.warning(f"{symbol} {leg}腿订单状态: {updated.status}")
-                    _flush_log(f"[WARN] {symbol} {leg}腿 订单异常状态: {updated.status}")
-                    sys.stdout.flush()
+                    self.logger.warning(f"[WARN] {symbol} {leg}腿 订单异常状态: {updated.status}")
                     return None
             except Exception as e:
-                _flush_log(f"[ERROR] {symbol} {leg}腿 查询异常 (尝试 {attempt+1}/5): {e}")
-                sys.stdout.flush()
+                self.logger.error(f"[ERROR] {symbol} {leg}腿 查询异常 (尝试 {attempt+1}/5): {e}")
                 if attempt == 4:  # 最后一次尝试
                     self.logger.error(f"{symbol} {leg}腿订单查询失败: {e}")
             time.sleep(0.1)
 
         self.logger.warning(f"{symbol} {leg}腿订单未确认，使用当前价格")
-        _flush_log(f"[WARN] {symbol} {leg}腿 订单未确认，使用当前价格 {current_price:.6f}")
-        sys.stdout.flush()
+        self.logger.warning(f"[WARN] {symbol} {leg}腿 订单未确认，使用当前价格 {current_price:.6f}")
         return current_price
 
     def _open_first_leg(self, pos: SimpleHedgePosition) -> bool:
         """开第一腿"""
-        _flush_log(f"[_open_first_leg-ENTRY] {pos.symbol} 开始开第一腿")
-        sys.stdout.flush()
+        self.logger.debug(f"[_open_first_leg-ENTRY] {pos.symbol} 开始开第一腿")
 
         if not self.client:
             self.logger.error(f"第一腿开仓失败: {pos.symbol} - 客户端未初始化")
-            _flush_log(f"[ERROR] {pos.symbol} 客户端未初始化")
-            sys.stdout.flush()
+            self.logger.error(f"[ERROR] {pos.symbol} 客户端未初始化")
             return False
 
         try:
             # 设置杠杆（使用缓存避免重复设置）
-            _flush_log(f"[_open_first_leg-1] {pos.symbol} 设置杠杆, leverage={self.leverage}, in_cache={pos.symbol in self._leverage_set}")
-            sys.stdout.flush()
+            self.logger.debug(f"[_open_first_leg-1] {pos.symbol} 设置杠杆, leverage={self.leverage}, in_cache={pos.symbol in self._leverage_set}")
 
             if pos.symbol not in self._leverage_set:
                 self.client.set_leverage(self.leverage, pos.symbol)
                 self._leverage_set.add(pos.symbol)
-                _flush_log(f"[_open_first_leg-2] {pos.symbol} 杠杆设置完成")
-                sys.stdout.flush()
+                self.logger.debug(f"[_open_first_leg-2] {pos.symbol} 杠杆设置完成")
 
             side = "BUY" if pos.first_side == "LONG" else "SELL"
-            _flush_log(f"[_open_first_leg-3] {pos.symbol} 下市价单, side={side}, quantity={pos.first_quantity:.6f}, position_side={pos.first_side}")
-            sys.stdout.flush()
+            self.logger.debug(f"[_open_first_leg-3] {pos.symbol} 下市价单, side={side}, quantity={pos.first_quantity:.6f}, position_side={pos.first_side}")
 
             order = self.client.place_market_order(
                 symbol=pos.symbol,
@@ -389,62 +406,51 @@ class SimpleHedgeExecutor:
                 position_side=pos.first_side
             )
 
-            _flush_log(f"[_open_first_leg-4] {pos.symbol} 订单返回, order={order}, type={type(order)}")
-            sys.stdout.flush()
+            self.logger.debug(f"[_open_first_leg-4] {pos.symbol} 订单返回, order={order}, type={type(order)}")
 
             if not order:
                 self.logger.warning(f"第一腿开仓失败: {pos.symbol} - 订单返回None")
-                _flush_log(f"[ERROR] {pos.symbol} 订单返回None")
-                sys.stdout.flush()
+                self.logger.error(f"[ERROR] {pos.symbol} 订单返回None")
                 return False
 
             if hasattr(order, 'status'):
-                _flush_log(f"[_open_first_leg-5] {pos.symbol} 订单状态: {order.status}")
-                sys.stdout.flush()
+                self.logger.debug(f"[_open_first_leg-5] {pos.symbol} 订单状态: {order.status}")
 
                 if order.status == "REJECTED":
                     self.logger.warning(f"第一腿开仓被拒绝: {pos.symbol}")
-                    _flush_log(f"[ERROR] {pos.symbol} 订单被拒绝")
-                    sys.stdout.flush()
+                    self.logger.error(f"[ERROR] {pos.symbol} 订单被拒绝")
                     return False
 
             if hasattr(order, 'order_id'):
                 pos.first_order_id = order.order_id
-                _flush_log(f"[_open_first_leg-6] {pos.symbol} 订单ID: {order.order_id}")
-                sys.stdout.flush()
+                self.logger.debug(f"[_open_first_leg-6] {pos.symbol} 订单ID: {order.order_id}")
             else:
-                _flush_log(f"[ERROR] {pos.symbol} 订单对象没有order_id属性, order={order}")
-                sys.stdout.flush()
+                self.logger.error(f"[ERROR] {pos.symbol} 订单对象没有order_id属性, order={order}")
                 return False
 
             # 确认成交
-            _flush_log(f"[_open_first_leg-7] {pos.symbol} 等待订单成交确认")
-            sys.stdout.flush()
+            self.logger.debug(f"[_open_first_leg-7] {pos.symbol} 等待订单成交确认")
 
             filled_price = self._wait_for_order_fill(
                 pos.symbol, order.order_id, pos.first_entry, "第一腿"
             )
 
-            _flush_log(f"[_open_first_leg-8] {pos.symbol} 成交确认结果: filled_price={filled_price}")
-            sys.stdout.flush()
+            self.logger.debug(f"[_open_first_leg-8] {pos.symbol} 成交确认结果: filled_price={filled_price}")
 
             if filled_price is not None:
                 pos.first_entry = filled_price
                 pos.first_filled = True
                 self.logger.info(f"第一腿开仓成功: {pos.symbol} {pos.first_side} @ {filled_price:.6f}")
-                _flush_log(f"[SUCCESS] {pos.symbol} 第一腿开仓成功 @ {filled_price:.6f}")
-                sys.stdout.flush()
+                self.logger.info(f"[SUCCESS] {pos.symbol} 第一腿开仓成功 @ {filled_price:.6f}")
                 return True
             else:
                 self.logger.error(f"第一腿未确认成交: {pos.symbol}")
-                _flush_log(f"[ERROR] {pos.symbol} 第一腿未确认成交")
-                sys.stdout.flush()
+                self.logger.error(f"[ERROR] {pos.symbol} 第一腿未确认成交")
                 return False
 
         except Exception as e:
             self.logger.error(f"第一腿开仓错误: {e}")
-            _flush_log(f"[ERROR] {pos.symbol} 第一腿开仓异常: {e}")
-            sys.stdout.flush()
+            self.logger.error(f"[ERROR] {pos.symbol} 第一腿开仓异常: {e}")
             import traceback
             traceback.print_exc()
             return False

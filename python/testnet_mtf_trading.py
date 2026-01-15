@@ -29,14 +29,12 @@ from src.analysis.kline_tracker import KlineTrackerManager, Timeframe, Kline
 from src.analysis.atr_detector import SpikeDetectorManager, SpikeDetectorConfig
 from src.exchange.binance_futures import BinanceFuturesClient
 from src.trading.simple_hedge import SimpleHedgeExecutor, SimpleHedgeConfig
-from src.utils.logger import setup_logging
+from src.utils.logging_config import setup_logging, get_logger, EventLogger
 from src.trading.trade_logger import TradeLogger, TradeRecord
 
-try:
-    from src.utils.logger import get_logger
-    logger = get_logger()
-except ImportError:
-    logger = None
+# 使用统一日志系统
+logger = get_logger(__name__)
+events = EventLogger(logger)
 
 
 # 配置
@@ -275,7 +273,8 @@ class MTFTradingRunner:
         self.running = False
         self._start_time = 0.0
 
-        self.bot_logger = setup_logging(log_dir="logs", console_level="INFO")
+        # 配置统一日志系统
+        setup_logging(log_dir="logs", console_level="INFO", file_level="DEBUG")
 
         # 交易记录
         self.trade_logger = TradeLogger(log_dir="testnet_trades", auto_save=True)
@@ -296,13 +295,14 @@ class MTFTradingRunner:
         )
         self.detector_manager = SpikeDetectorManager(config=detector_config)
 
-        # 对冲执行器
+        # 对冲执行器 - 传入logger以便日志集成
         self.hedge_executor = SimpleHedgeExecutor(
             client=None,
             config=SimpleHedgeConfig(),
             position_usdt=self.config.POSITION_USDT,
             leverage=self.config.LEVERAGE,
-            fee_rate=self.config.FEE_RATE
+            fee_rate=self.config.FEE_RATE,
+            external_logger=logger  # 传入主程序logger
         )
         self.hedge_executor.set_hedge_closed_callback(self._on_hedge_closed)
 
@@ -319,21 +319,21 @@ class MTFTradingRunner:
         )
         self.hedge_executor.client = self.client
 
-        self.bot_logger.info(f"{'='*60}")
-        self.bot_logger.info("Flash Arbitrage Bot - 多时间框架策略（测试网）")
-        self.bot_logger.info(f"{'='*60}")
-        self.bot_logger.info("测试交易所连接...")
+        logger.info(f"{'='*60}")
+        logger.info("Flash Arbitrage Bot - 多时间框架策略（测试网）")
+        logger.info(f"{'='*60}")
+        logger.info("测试交易所连接...")
 
         if not self.client.test_connectivity():
-            self.bot_logger.error("无法连接到币安测试网")
+            logger.error("无法连接到币安测试网")
             return
 
         account = self.client.get_account_info()
         if not account:
-            self.bot_logger.error("无法获取账户信息")
+            logger.error("无法获取账户信息")
             return
 
-        self.bot_logger.info(f"连接成功 | 可用余额: {account.available_balance:.2f} USDT")
+        logger.info(f"连接成功 | 可用余额: {account.available_balance:.2f} USDT")
 
         self.receiver = MarketDataReceiver(
             symbols=symbols,
@@ -348,17 +348,17 @@ class MTFTradingRunner:
         self._start_time = time.time()
 
         hedge_cfg = self.hedge_executor.config
-        self.bot_logger.info(f"{'='*60}")
-        self.bot_logger.info("多时间框架策略已启动")
-        self.bot_logger.info(f"监控: {', '.join(symbols[:5])}{'...' if len(symbols) > 5 else ''}")
-        self.bot_logger.info(f"配置: {self.config.POSITION_USDT} USDT × {self.config.LEVERAGE}x")
-        self.bot_logger.info(
+        logger.info(f"{'='*60}")
+        logger.info("多时间框架策略已启动")
+        logger.info(f"监控: {', '.join(symbols[:5])}{'...' if len(symbols) > 5 else ''}")
+        logger.info(f"配置: {self.config.POSITION_USDT} USDT × {self.config.LEVERAGE}x")
+        logger.info(
             f"参数: 对冲{hedge_cfg.HEDGE_ENTRY_PERCENT:.1%} | "
             f"目标{hedge_cfg.FIRST_LEG_TARGET_PERCENT:.1%} | "
             f"等待{hedge_cfg.SECOND_LEG_WAIT_SECONDS}s"
         )
-        self.bot_logger.info(f"{'='*60}")
-        self.bot_logger.info("等待信号...")
+        logger.info(f"{'='*60}")
+        logger.info("等待信号...")
 
         signal.signal(signal.SIGINT, self._signal_handler)
 
@@ -398,7 +398,7 @@ class MTFTradingRunner:
         }
         self._trade_records.append(record)
 
-        self.bot_logger.info(
+        logger.info(
             f"交易记录: {position.symbol} "
             f"第一腿:{position.first_pnl:+.4f} "
             f"第二腿:{position.second_pnl:+.4f} "
@@ -412,7 +412,7 @@ class MTFTradingRunner:
         elapsed = time.time() - self._start_time if self._start_time else 0
         stats = self.hedge_executor.get_stats()
 
-        self.bot_logger.info(
+        logger.info(
             f"运行 {elapsed/60:.1f}min | "
             f"信号: {self.receiver.signal_count} | "
             f"活跃: {stats['active_positions']} | "
@@ -422,7 +422,7 @@ class MTFTradingRunner:
         if stats['total_trades'] > 0:
             pnl = stats['total_pnl']
             pnl_mark = "+" if pnl > 0 else "" if pnl == 0 else ""
-            self.bot_logger.info(
+            logger.info(
                 f"   总盈亏: {pnl_mark}{pnl:.4f} USDT | "
                 f"胜率: {stats['win_rate']:.1f}%"
             )
@@ -431,13 +431,13 @@ class MTFTradingRunner:
         if not self.running:
             return
 
-        self.bot_logger.warning("\n正在停止...")
+        logger.warning("\n正在停止...")
         self.running = False
 
         if hasattr(self, 'receiver'):
             self.receiver.stop()
 
-        self.bot_logger.info("平仓所有持仓...")
+        logger.info("平仓所有持仓...")
         self.hedge_executor.close_all(reason="shutdown")
         time.sleep(2)
 
@@ -478,29 +478,29 @@ class MTFTradingRunner:
                 writer.writeheader()
                 writer.writerows(self._trade_records)
 
-        self.bot_logger.info(f"交易记录已导出: {json_path.name}, {csv_path.name}")
+        logger.info(f"交易记录已导出: {json_path.name}, {csv_path.name}")
 
     def _print_final_stats(self) -> None:
         stats = self.hedge_executor.get_stats()
         elapsed = time.time() - self._start_time if self._start_time else 0
 
-        self.bot_logger.info(f"{'='*60}")
-        self.bot_logger.info("最终统计")
-        self.bot_logger.info(f"   运行时长: {elapsed/60:.1f}分钟")
-        self.bot_logger.info(f"   完成交易: {stats['total_trades']}")
+        logger.info(f"{'='*60}")
+        logger.info("最终统计")
+        logger.info(f"   运行时长: {elapsed/60:.1f}分钟")
+        logger.info(f"   完成交易: {stats['total_trades']}")
 
         if stats['total_trades'] > 0:
             pnl = stats['total_pnl']
             pnl_mark = "+" if pnl > 0 else "" if pnl == 0 else ""
-            self.bot_logger.info(
+            logger.info(
                 f"   胜率: {stats['win_rate']:.1f}% | "
                 f"总盈亏: {pnl_mark}{pnl:.4f} USDT"
             )
 
-        self.bot_logger.info(f"{'='*60}")
+        logger.info(f"{'='*60}")
 
     def _signal_handler(self, signum, frame) -> None:
-        self.bot_logger.warning("收到停止信号，正在安全停止...")
+        logger.warning("收到停止信号，正在安全停止...")
         self.stop()
 
 
